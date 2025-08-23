@@ -1,0 +1,15 @@
+# .streamlit/config.toml
+
+# A professional theme with a softer dark background.
+[theme]
+
+primaryColor = "#4A90E2"
+
+# A lighter, subtle dark grey for the main background.
+backgroundColor = "#1E1E26"
+
+# A slightly lighter shade for contrast on cards and sidebars.
+secondaryBackgroundColor = "#2C2C38"
+
+textColor = "#FAFAFA"
+font = "sans serif"
