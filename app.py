@@ -1,10 +1,11 @@
 import streamlit as st
 import json
 from datetime import datetime, timedelta
+import pandas as pd
 
 def analyze_cibil_report(data, reference_date):
     """
-    Analyzes the CIBIL JSON data using a specific reference date.
+    Analyzes the CIBIL JSON data and extracts details of active auto loans.
     """
     try:
         credit_report = data['reportData']['credit_report']
@@ -22,16 +23,24 @@ def analyze_cibil_report(data, reference_date):
 
     active_accounts_count, active_sanction_total, total_existing_emi = 0, 0, 0
     loans_availed_last_3m, pl_bl_availed_last_6m = 0, 0
-    has_active_auto_loan = "No"
     written_off_accounts = set()
+    active_auto_loans = []
 
     for acc in accounts:
         if acc.get('Open') == 'Yes':
             active_accounts_count += 1
             active_sanction_total += int(acc.get('SanctionAmount', 0))
             total_existing_emi += int(acc.get('InstallmentAmount', 0))
+            
             if 'Auto Loan' in acc.get('AccountType', ''):
-                has_active_auto_loan = "Yes"
+                loan_details = {
+                    "Financer": acc.get('Institution', 'N/A'),
+                    "Sanction Amount": f"₹{int(acc.get('SanctionAmount', 0)):,}",
+                    "Date Opened": acc.get('DateOpened', 'N/A'),
+                    "Installment Amount": f"₹{int(acc.get('InstallmentAmount', 0)):,}"
+                }
+                active_auto_loans.append(loan_details)
+
         date_opened_str = acc.get('DateOpened')
         if date_opened_str:
             date_opened = datetime.strptime(date_opened_str, '%Y-%m-%d').date()
@@ -48,19 +57,18 @@ def analyze_cibil_report(data, reference_date):
         if enq_date >= (report_date - timedelta(days=90)):
             enquiries_last_3_months += 1
     
-    # --- CHANGE: Combine Active Loans and Sanctioned Amount into one field ---
     active_loans_summary = f"{active_accounts_count} / ₹{active_sanction_total:,}"
-
+    
     return {
         "Customer Name": personal_info.get('Name', {}).get('FullName', 'N/A'),
         "CIBIL Score": data['reportData'].get('credit_score', 'N/A'),
         "Total Overdue": int(summary.get('TotalPastDue', 0)),
-        "Active Loans Summary": active_loans_summary, # New combined field
+        "Active Loans Summary": active_loans_summary,
         "Last 3 months Enquiry": enquiries_last_3_months,
         "Total Existing EMI": total_existing_emi,
         "PL/BL Availed in last 6m": pl_bl_availed_last_6m,
         "Loan Availed in last 3m": loans_availed_last_3m,
-        "Has Active Auto Loan?": has_active_auto_loan,
+        "Active Auto Loans": active_auto_loans,
         "Settled/Write-off count": len(written_off_accounts)
     }
 
@@ -123,9 +131,7 @@ if uploaded_file is not None:
             col4, col5, col6 = st.columns(3)
             with col4:
                 st.subheader("Account Details")
-                # --- CHANGE: Display the new combined field ---
                 st.text(f"Active Loans / Sanctioned: {summary['Active Loans Summary']}")
-                st.text(f"Has Active Auto Loan?: {summary['Has Active Auto Loan?']}")
             with col5:
                 st.subheader("Payment Details")
                 st.text(f"Total Existing EMI: ₹{summary['Total Existing EMI']:,}")
@@ -135,5 +141,13 @@ if uploaded_file is not None:
                 st.subheader("Recent Activity")
                 st.text(f"PL/BL Availed in last 6m: {summary['PL/BL Availed in last 6m']}")
                 st.text(f"Loan Availed in last 3m: {summary['Loan Availed in last 3m']}")
+            
+            # --- NEW: Display Auto Loan details in a clean table ---
+            if summary["Active Auto Loans"]:
+                st.markdown("---")
+                st.subheader("Active Auto Loan Details")
+                # Convert list of dicts to a Pandas DataFrame for better table display
+                df_auto_loans = pd.DataFrame(summary["Active Auto Loans"])
+                st.table(df_auto_loans)
             
             st.info("Note: 'Total Bounces' information is not available in a standard CIBIL report.")
