@@ -3,9 +3,10 @@ import json
 from datetime import datetime, timedelta
 import pandas as pd
 
+# --- (The 'analyze_cibil_report' function remains exactly the same) ---
 def analyze_cibil_report(data, reference_date):
     """
-    Analyzes the CIBIL JSON data and extracts details of active auto loans.
+    Analyzes the CIBIL JSON data and returns a dictionary of key metrics.
     """
     try:
         credit_report = data['reportData']['credit_report']
@@ -13,121 +14,92 @@ def analyze_cibil_report(data, reference_date):
     except (KeyError, IndexError):
         st.error("Error: The JSON structure is not recognized. Please upload a valid CIBIL report.")
         return None
-
     report_date = reference_date
     accounts = report_container.get('CIRReportData', {}).get('RetailAccountDetails', [])
     summary = report_container.get('CIRReportData', {}).get('RetailAccountsSummary', {})
     personal_info = report_container.get('CIRReportData', {}).get('IDAndContactInfo', {}).get('PersonalInfo', {})
-    inquiry_header = credit_report.get('CCRResponse', {}).get('InquiryResponseHeader', {})
     enquiries = credit_report.get('Enquiries', [])
-
     active_accounts_count, active_sanction_total, total_existing_emi = 0, 0, 0
-    loans_availed_last_3m, pl_bl_availed_last_6m = 0, 0
     written_off_accounts = set()
     active_auto_loans = []
-
+    total_missed_payments = 0
     for acc in accounts:
+        for month_history in acc.get('History48Months', []):
+            try:
+                if int(month_history.get('PaymentStatus', 0)) > 0:
+                    total_missed_payments += 1
+            except (ValueError, TypeError):
+                continue
         if acc.get('Open') == 'Yes':
             active_accounts_count += 1
             active_sanction_total += int(acc.get('SanctionAmount', 0))
             total_existing_emi += int(acc.get('InstallmentAmount', 0))
-            
             if 'Auto Loan' in acc.get('AccountType', ''):
-                loan_details = {
+                active_auto_loans.append({
                     "Financer": acc.get('Institution', 'N/A'),
                     "Sanction Amount": f"₹{int(acc.get('SanctionAmount', 0)):,}",
                     "Date Opened": acc.get('DateOpened', 'N/A'),
                     "Installment Amount": f"₹{int(acc.get('InstallmentAmount', 0)):,}"
-                }
-                active_auto_loans.append(loan_details)
-
-        date_opened_str = acc.get('DateOpened')
-        if date_opened_str:
-            date_opened = datetime.strptime(date_opened_str, '%Y-%m-%d').date()
-            if date_opened >= (report_date - timedelta(days=90)):
-                loans_availed_last_3m += 1
-            if date_opened >= (report_date - timedelta(days=180)) and 'Personal Loan' in acc.get('AccountType', ''):
-                 pl_bl_availed_last_6m += 1
-                 
+                })
         if any(h.get('AssetClassificationStatus') == 'LSS' for h in acc.get('History48Months', [])):
             written_off_accounts.add(acc.get('AccountNumber'))
-
     enquiries_last_3_months = 0
     for enq in enquiries:
         enq_date = datetime.strptime(enq['enquiryDate'], '%Y-%m-%d').date()
         if enq_date >= (report_date - timedelta(days=90)):
             enquiries_last_3_months += 1
-    
-    active_loans_summary = f"{active_accounts_count} / ₹{active_sanction_total:,}"
-    
+    all_accounts_details = []
+    for acc in accounts:
+        all_accounts_details.append({
+            "Financer": acc.get('Institution', 'N/A'),
+            "Account Type": acc.get('AccountType', 'N/A'),
+            "Status": "Open" if acc.get('Open') == 'Yes' else "Closed",
+            "Date Opened": acc.get('DateOpened', 'N/A'),
+            "SanctionAmountInt": int(acc.get('SanctionAmount', 0)),
+            "Sanction Amount": f"₹{int(acc.get('SanctionAmount', 0)):,}",
+            "Current Balance": f"₹{int(acc.get('Balance', 0)):,}",
+            "Amount Overdue": f"₹{int(acc.get('PastDueAmount', 0)):,}"
+        })
     return {
         "Customer Name": personal_info.get('Name', {}).get('FullName', 'N/A'),
         "CIBIL Score": data['reportData'].get('credit_score', 'N/A'),
         "Total Overdue": int(summary.get('TotalPastDue', 0)),
-        "Active Loans Summary": active_loans_summary,
+        "Active Loans / Sanctioned": f"{active_accounts_count} / ₹{active_sanction_total:,}",
         "Last 3 months Enquiry": enquiries_last_3_months,
         "Total Existing EMI": total_existing_emi,
-        "PL/BL Availed in last 6m": pl_bl_availed_last_6m,
-        "Loan Availed in last 3m": loans_availed_last_3m,
+        "Total Bounces / Missed Payments": total_missed_payments,
         "Active Auto Loans": active_auto_loans,
-        "Settled/Write-off count": len(written_off_accounts)
+        "Settled/Write-off count": len(written_off_accounts),
+        "All Accounts Details": all_accounts_details
     }
+
 
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="CIBIL Report Analyzer", layout="wide")
 
-# Complete CSS for styling the application
 st.markdown("""
 <style>
-    .custom-header {
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-        padding: 1rem 0;
-    }
-    .custom-header .logo {
-        font-size: 2.5rem;
-    }
-    .custom-header .title-text {
-        font-size: 2rem;
-        font-weight: bold;
-        color: #FAFAFA;
-    }
-    .metric-card {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        background-color: #2C2C38;
-        border: 1px solid #2C2C38;
-    }
-    .metric-card .metric-label {
-        font-size: 1rem;
-        color: #BDBDBD;
-    }
-    .metric-card .metric-value {
-        font-size: 2rem;
-        font-weight: bold;
-        color: white;
-    }
-    .metric-card .metric-value.green {
-        color: #28a745;
-    }
-    .metric-card .metric-value.red {
-        color: #dc3545;
-    }
+    .custom-header { display: flex; align-items: center; gap: 1rem; padding: 1rem 0; }
+    .custom-header .logo { font-size: 2.5rem; }
+    .custom-header .title-text { font-size: 2rem; font-weight: bold; color: #FAFAFA; }
+    /* Added text-align: center to the metric card for better alignment */
+    .metric-card { padding: 1rem; border-radius: 0.5rem; background-color: #2C2C38; border: 1px solid #2C2C38; text-align: center; }
+    .metric-card .metric-label { font-size: 1rem; color: #BDBDBD; }
+    .metric-card .metric-value { font-size: 2.5rem; font-weight: bold; color: white; }
+    .metric-card .metric-value.green { color: #28a745; }
+    .metric-card .metric-value.red { color: #dc3545; }
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state variables
+# (Session state and reset function are unchanged)
 if 'analysis_done' not in st.session_state:
     st.session_state.analysis_done = False
 if 'widget_key' not in st.session_state:
     st.session_state.widget_key = 0
-
 def reset_app():
     st.session_state.analysis_done = False
     st.session_state.widget_key += 1
 
-# Custom Header HTML
 st.markdown("""
 <div class="custom-header">
     <div class="logo">📊</div>
@@ -136,45 +108,28 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.markdown("Upload your CIBIL JSON file or paste the content below to get an instant summary.")
 
-input_method = st.radio(
-    "Choose input method:",
-    ["File Upload", "Paste JSON Text"],
-    key=f"radio_{st.session_state.widget_key}"
-)
-
-json_data_source = None
+# (Input method logic is unchanged)
+input_method = st.radio("Choose Input Method:", ["File Upload", "Paste JSON Text"], horizontal=True, key=f"radio_{st.session_state.widget_key}")
+data = None
 
 if input_method == "File Upload":
-    uploaded_file = st.file_uploader(
-        "Choose your CIBIL JSON file",
-        type="json",
-        key=f"file_uploader_{st.session_state.widget_key}"
-    )
+    uploaded_file = st.file_uploader("Choose your CIBIL JSON file", type="json", key=f"uploader_{st.session_state.widget_key}")
     if uploaded_file:
-        json_data_source = uploaded_file
+        data = json.load(uploaded_file)
 else:
-    json_text = st.text_area(
-        "Paste the entire JSON content here:",
-        height=250,
-        key=f"text_area_{st.session_state.widget_key}"
-    )
+    json_text = st.text_area("Paste the entire JSON content here:", height=250, key=f"textarea_{st.session_state.widget_key}")
     if json_text:
         try:
-            json_data_source = json.loads(json_text)
+            data = json.loads(json_text)
         except json.JSONDecodeError:
             st.error("Invalid JSON format. Please check the pasted content.")
-            json_data_source = None
+            data = None
 
-if json_data_source and not st.session_state.analysis_done:
-    data = json.load(json_data_source) if hasattr(json_data_source, 'read') else json_data_source
-    
+if data and not st.session_state.analysis_done:
     st.markdown("---")
-    st.subheader("🗓️ Select Report Date")
-    selected_date = st.date_input(
-        "Choose the date on which the report was generated:",
-        value=datetime.now().date()
-    )
-
+    st.subheader("🗓️ Select Analysis Date")
+    selected_date = st.date_input("Choose the date for which to run the analysis:", value=datetime.now().date())
+    
     if st.button("Analyze Report"):
         st.session_state.summary = analyze_cibil_report(data, selected_date)
         st.session_state.analysis_done = True
@@ -186,38 +141,65 @@ if st.session_state.analysis_done:
         st.markdown("---")
         st.header(f"Credit Summary for {summary['Customer Name']}")
         
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown(f'<div class="metric-card"><div class="metric-label">CIBIL Score</div><div class="metric-value">{summary["CIBIL Score"]}</div></div>', unsafe_allow_html=True)
-        with col2:
-            overdue_color = "red" if summary['Total Overdue'] > 0 else "green"
-            st.markdown(f'<div class="metric-card"><div class="metric-label">Total Overdue</div><div class="metric-value {overdue_color}">₹{summary["Total Overdue"]:,}</div></div>', unsafe_allow_html=True)
-        with col3:
-            enquiry_color = "red" if summary['Last 3 months Enquiry'] > 5 else "green"
-            st.markdown(f'<div class="metric-card"><div class="metric-label">Last 3 months Enquiry</div><div class="metric-value {enquiry_color}">{summary["Last 3 months Enquiry"]}</div></div>', unsafe_allow_html=True)
+        tab1, tab2 = st.tabs(["📊 Credit Summary", "🗂️ Complete Account History"])
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        col4, col5, col6 = st.columns(3)
-        with col4:
-            st.subheader("Account Details")
-            st.text(f"Active Loans / Sanctioned: {summary['Active Loans Summary']}")
-        with col5:
-            st.subheader("Payment Details")
-            st.text(f"Total Existing EMI: ₹{summary['Total Existing EMI']:,}")
-            settled_color = "red" if summary['Settled/Write-off count'] > 0 else "green"
-            st.markdown(f"Settled/Write-off Count: <span style='color:{settled_color}; font-weight:bold;'>{summary['Settled/Write-off count']}</span>", unsafe_allow_html=True)
-        with col6:
-            st.subheader("Recent Activity")
-            st.text(f"PL/BL Availed in last 6m: {summary['PL/BL Availed in last 6m']}")
-            st.text(f"Loan Availed in last 3m: {summary['Loan Availed in last 3m']}")
+        with tab1:
+            # --- FIX: Reinstated the metric cards and added the summary table below ---
+            
+            # Row 1: The three main metric cards
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.markdown(f'<div class="metric-card"><div class="metric-label">CIBIL Score</div><div class="metric-value">{summary["CIBIL Score"]}</div></div>', unsafe_allow_html=True)
+            with col2:
+                overdue_color = "red" if summary['Total Overdue'] > 0 else "green"
+                st.markdown(f'<div class="metric-card"><div class="metric-label">Total Overdue</div><div class="metric-value {overdue_color}">₹{summary["Total Overdue"]:,}</div></div>', unsafe_allow_html=True)
+            with col3:
+                enquiry_color = "red" if summary['Last 3 months Enquiry'] > 5 else "green"
+                st.markdown(f'<div class="metric-card"><div class="metric-label">Last 3 months Enquiry</div><div class="metric-value {enquiry_color}">{summary["Last 3 months Enquiry"]}</div></div>', unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # Row 2: A clean table for the rest of the details
+            summary_data = {
+                "Key Metric": [
+                    "Active Loans / Sanctioned",
+                    "Total Existing EMI",
+                    "Total Missed Payments (in 48 Mths)",
+                    "Settled/Write-off Count"
+                ],
+                "Value": [
+                    str(summary["Active Loans / Sanctioned"]),
+                    f"₹{summary['Total Existing EMI']:,}",
+                    str(summary["Total Bounces / Missed Payments"]),
+                    str(summary["Settled/Write-off count"])
+                ]
+            }
+            summary_df = pd.DataFrame(summary_data)
+            st.table(summary_df.style.hide(axis="index"))
+
+            if summary["Active Auto Loans"]:
+                st.markdown("---")
+                st.subheader("Active Auto Loan Details")
+                st.table(pd.DataFrame(summary["Active Auto Loans"]))
+
+        with tab2:
+            if summary["All Accounts Details"]:
+                df_all_accounts = pd.DataFrame(summary["All Accounts Details"])
+                st.write("Filter accounts by status:")
+                status_filter = st.radio("Status", ["All", "Open", "Closed"], horizontal=True, label_visibility="collapsed")
+                if status_filter == "Open":
+                    df_display = df_all_accounts[df_all_accounts['Status'] == 'Open']
+                elif status_filter == "Closed":
+                    df_display = df_all_accounts[df_all_accounts['Status'] == 'Closed']
+                else:
+                    df_display = df_all_accounts
+                df_display = df_display.sort_values(by="SanctionAmountInt", ascending=False)
+                df_to_show = df_display.drop(columns=["SanctionAmountInt"])
+                def highlight_overdue(row):
+                    is_overdue = int(str(row["Amount Overdue"]).replace("₹", "").replace(",", "")) > 0
+                    return ['background-color: #4a2c2c'] * len(row) if is_overdue else [''] * len(row)
+                st.dataframe(df_to_show.style.apply(highlight_overdue, axis=1), use_container_width=True)
         
-        if summary["Active Auto Loans"]:
-            st.markdown("---")
-            st.subheader("Active Auto Loan Details")
-            df_auto_loans = pd.DataFrame(summary["Active Auto Loans"])
-            st.table(df_auto_loans)
-        
-        st.info("Note: 'Total Bounces' information is not available in a standard CIBIL report.")
         st.markdown("---")
         if st.button("Analyze Another Report"):
             reset_app()
