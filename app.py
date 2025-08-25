@@ -2,11 +2,11 @@ import streamlit as st
 import json
 from datetime import datetime, timedelta
 import pandas as pd
+import base64
 
 def analyze_cibil_report(data, reference_date):
     """
     Analyzes the CIBIL JSON data and returns a dictionary of key metrics.
-    Includes robust handling for empty string values in numeric fields.
     """
     try:
         credit_report = data['reportData']['credit_report']
@@ -25,12 +25,21 @@ def analyze_cibil_report(data, reference_date):
     written_off_accounts = set()
     active_auto_loans = []
     total_missed_payments = 0
+    missed_payments_details = []
 
     for acc in accounts:
         for month_history in acc.get('History48Months', []):
             try:
-                if int(month_history.get('PaymentStatus', 0)) > 0:
+                payment_status_dpd = int(month_history.get('PaymentStatus', 0))
+                if payment_status_dpd > 0:
                     total_missed_payments += 1
+                    missed_payments_details.append({
+                        "Financer": acc.get('Institution', 'N/A'),
+                        "Account Type": acc.get('AccountType', 'N/A'),
+                        "Month/Year": month_history.get('key', 'N/A'),
+                        "Days Past Due": payment_status_dpd,
+                        "Current Overdue": f"₹{int(acc.get('PastDueAmount', 0)):,}"
+                    })
             except (ValueError, TypeError):
                 continue
                 
@@ -38,7 +47,6 @@ def analyze_cibil_report(data, reference_date):
             active_accounts_count += 1
             active_sanction_total += int(acc.get('SanctionAmount', 0))
             
-            # --- FIX: Handle cases where LastPayment or InstallmentAmount might be empty strings ---
             installment_str = acc.get('InstallmentAmount')
             installment_amount = int(installment_str) if installment_str and installment_str.isdigit() else 0
             
@@ -84,7 +92,8 @@ def analyze_cibil_report(data, reference_date):
         "Active Loans / Sanctioned": f"{active_accounts_count} / ₹{active_sanction_total:,}",
         "Last 3 months Enquiry": enquiries_last_3_months,
         "Total Existing EMI": total_existing_emi,
-        "Total Bounces / Missed Payments": total_missed_payments,
+        "Total Missed Payments": total_missed_payments,
+        "Missed Payments Details": missed_payments_details,
         "Active Auto Loans": active_auto_loans,
         "Settled/Write-off count": len(written_off_accounts),
         "All Accounts Details": all_accounts_details
@@ -110,6 +119,7 @@ if 'analysis_done' not in st.session_state:
     st.session_state.analysis_done = False
 if 'widget_key' not in st.session_state:
     st.session_state.widget_key = 0
+
 def reset_app():
     st.session_state.analysis_done = False
     if 'summary' in st.session_state:
@@ -162,7 +172,7 @@ if st.session_state.analysis_done:
         st.markdown("---")
         st.header(f"Credit Summary for {summary['Customer Name']}")
         
-        tab1, tab2 = st.tabs(["📊 Credit Summary", "🗂️ Complete Account History"])
+        tab1, tab2, tab3 = st.tabs(["📊 Credit Summary", "🗂️ Complete Account History", "🔍 Missed Payment Details"])
 
         with tab1:
             col1, col2, col3 = st.columns(3)
@@ -187,7 +197,7 @@ if st.session_state.analysis_done:
                 "Value": [
                     str(summary["Active Loans / Sanctioned"]),
                     f"₹{summary['Total Existing EMI']:,}",
-                    str(summary["Total Bounces / Missed Payments"]),
+                    str(summary["Total Missed Payments"]),
                     str(summary["Settled/Write-off count"])
                 ]
             }
@@ -217,6 +227,21 @@ if st.session_state.analysis_done:
                     return ['background-color: #4a2c2c'] * len(row) if is_overdue else [''] * len(row)
                 st.dataframe(df_to_show.style.apply(highlight_overdue, axis=1), use_container_width=True)
         
+        with tab3:
+            st.subheader("Log of All Missed Payments (48-Month History)")
+            if summary["Missed Payments Details"]:
+                df_missed = pd.DataFrame(summary["Missed Payments Details"])
+                try:
+                    df_missed['SortableDate'] = pd.to_datetime(df_missed['Month/Year'], format='%m-%y')
+                    df_missed = df_missed.sort_values(by='SortableDate', ascending=False).drop(columns=['SortableDate'])
+                except (ValueError, TypeError):
+                    pass
+                df_missed.insert(0, 'Sr. No.', range(1, 1 + len(df_missed)))
+                df_display = df_missed[['Sr. No.', 'Financer', 'Account Type', 'Month/Year', 'Days Past Due', 'Current Overdue']]
+                st.dataframe(df_display, use_container_width=True)
+            else:
+                st.success("No missed payments found in the 48-month history.")
+
         st.markdown("---")
         if st.button("Analyze Another Report"):
             reset_app()
