@@ -3,7 +3,6 @@ import json
 from datetime import datetime, timedelta
 import pandas as pd
 
-# --- (The 'analyze_cibil_report' function remains exactly the same) ---
 def analyze_cibil_report(data, reference_date):
     """
     Analyzes the CIBIL JSON data and returns a dictionary of key metrics.
@@ -33,13 +32,16 @@ def analyze_cibil_report(data, reference_date):
         if acc.get('Open') == 'Yes':
             active_accounts_count += 1
             active_sanction_total += int(acc.get('SanctionAmount', 0))
-            total_existing_emi += int(acc.get('InstallmentAmount', 0))
+            installment_amount = int(acc.get('InstallmentAmount', 0))
+            last_payment_amount = int(acc.get('LastPayment', 0))
+            emi_for_this_account = installment_amount if installment_amount > 0 else last_payment_amount
+            total_existing_emi += emi_for_this_account
             if 'Auto Loan' in acc.get('AccountType', ''):
                 active_auto_loans.append({
                     "Financer": acc.get('Institution', 'N/A'),
                     "Sanction Amount": f"₹{int(acc.get('SanctionAmount', 0)):,}",
                     "Date Opened": acc.get('DateOpened', 'N/A'),
-                    "Installment Amount": f"₹{int(acc.get('InstallmentAmount', 0)):,}"
+                    "Installment Amount": f"₹{emi_for_this_account:,}"
                 })
         if any(h.get('AssetClassificationStatus') == 'LSS' for h in acc.get('History48Months', [])):
             written_off_accounts.add(acc.get('AccountNumber'))
@@ -82,7 +84,6 @@ st.markdown("""
     .custom-header { display: flex; align-items: center; gap: 1rem; padding: 1rem 0; }
     .custom-header .logo { font-size: 2.5rem; }
     .custom-header .title-text { font-size: 2rem; font-weight: bold; color: #FAFAFA; }
-    /* Added text-align: center to the metric card for better alignment */
     .metric-card { padding: 1rem; border-radius: 0.5rem; background-color: #2C2C38; border: 1px solid #2C2C38; text-align: center; }
     .metric-card .metric-label { font-size: 1rem; color: #BDBDBD; }
     .metric-card .metric-value { font-size: 2.5rem; font-weight: bold; color: white; }
@@ -91,13 +92,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# (Session state and reset function are unchanged)
 if 'analysis_done' not in st.session_state:
     st.session_state.analysis_done = False
 if 'widget_key' not in st.session_state:
     st.session_state.widget_key = 0
 def reset_app():
     st.session_state.analysis_done = False
+    if 'summary' in st.session_state:
+        del st.session_state['summary']
     st.session_state.widget_key += 1
 
 st.markdown("""
@@ -108,8 +110,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.markdown("Upload your CIBIL JSON file or paste the content below to get an instant summary.")
 
-# (Input method logic is unchanged)
-input_method = st.radio("Choose Input Method:", ["File Upload", "Paste JSON Text"], horizontal=True, key=f"radio_{st.session_state.widget_key}")
+input_method = st.radio(
+    "Choose Input Method:",
+    ["File Upload", "Paste JSON Text"],
+    horizontal=True,
+    key=f"radio_{st.session_state.widget_key}"
+)
+
 data = None
 
 if input_method == "File Upload":
@@ -136,7 +143,7 @@ if data and not st.session_state.analysis_done:
         st.rerun()
 
 if st.session_state.analysis_done:
-    summary = st.session_state.summary
+    summary = st.session_state.get('summary')
     if summary:
         st.markdown("---")
         st.header(f"Credit Summary for {summary['Customer Name']}")
@@ -144,9 +151,7 @@ if st.session_state.analysis_done:
         tab1, tab2 = st.tabs(["📊 Credit Summary", "🗂️ Complete Account History"])
 
         with tab1:
-            # --- FIX: Reinstated the metric cards and added the summary table below ---
-            
-            # Row 1: The three main metric cards
+            # --- FIX: Restored the complete display logic for the summary tab ---
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.markdown(f'<div class="metric-card"><div class="metric-label">CIBIL Score</div><div class="metric-value">{summary["CIBIL Score"]}</div></div>', unsafe_allow_html=True)
@@ -159,7 +164,6 @@ if st.session_state.analysis_done:
 
             st.markdown("<br>", unsafe_allow_html=True)
 
-            # Row 2: A clean table for the rest of the details
             summary_data = {
                 "Key Metric": [
                     "Active Loans / Sanctioned",
