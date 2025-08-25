@@ -6,6 +6,7 @@ import pandas as pd
 def analyze_cibil_report(data, reference_date):
     """
     Analyzes the CIBIL JSON data and returns a dictionary of key metrics.
+    Includes robust handling for empty string values in numeric fields.
     """
     try:
         credit_report = data['reportData']['credit_report']
@@ -13,15 +14,18 @@ def analyze_cibil_report(data, reference_date):
     except (KeyError, IndexError):
         st.error("Error: The JSON structure is not recognized. Please upload a valid CIBIL report.")
         return None
+
     report_date = reference_date
     accounts = report_container.get('CIRReportData', {}).get('RetailAccountDetails', [])
     summary = report_container.get('CIRReportData', {}).get('RetailAccountsSummary', {})
     personal_info = report_container.get('CIRReportData', {}).get('IDAndContactInfo', {}).get('PersonalInfo', {})
     enquiries = credit_report.get('Enquiries', [])
+
     active_accounts_count, active_sanction_total, total_existing_emi = 0, 0, 0
     written_off_accounts = set()
     active_auto_loans = []
     total_missed_payments = 0
+
     for acc in accounts:
         for month_history in acc.get('History48Months', []):
             try:
@@ -29,13 +33,21 @@ def analyze_cibil_report(data, reference_date):
                     total_missed_payments += 1
             except (ValueError, TypeError):
                 continue
+                
         if acc.get('Open') == 'Yes':
             active_accounts_count += 1
             active_sanction_total += int(acc.get('SanctionAmount', 0))
-            installment_amount = int(acc.get('InstallmentAmount', 0))
-            last_payment_amount = int(acc.get('LastPayment', 0))
+            
+            # --- FIX: Handle cases where LastPayment or InstallmentAmount might be empty strings ---
+            installment_str = acc.get('InstallmentAmount')
+            installment_amount = int(installment_str) if installment_str and installment_str.isdigit() else 0
+            
+            last_payment_str = acc.get('LastPayment')
+            last_payment_amount = int(last_payment_str) if last_payment_str and last_payment_str.isdigit() else 0
+
             emi_for_this_account = installment_amount if installment_amount > 0 else last_payment_amount
             total_existing_emi += emi_for_this_account
+            
             if 'Auto Loan' in acc.get('AccountType', ''):
                 active_auto_loans.append({
                     "Financer": acc.get('Institution', 'N/A'),
@@ -45,11 +57,13 @@ def analyze_cibil_report(data, reference_date):
                 })
         if any(h.get('AssetClassificationStatus') == 'LSS' for h in acc.get('History48Months', [])):
             written_off_accounts.add(acc.get('AccountNumber'))
+
     enquiries_last_3_months = 0
     for enq in enquiries:
         enq_date = datetime.strptime(enq['enquiryDate'], '%Y-%m-%d').date()
         if enq_date >= (report_date - timedelta(days=90)):
             enquiries_last_3_months += 1
+            
     all_accounts_details = []
     for acc in accounts:
         all_accounts_details.append({
@@ -62,6 +76,7 @@ def analyze_cibil_report(data, reference_date):
             "Current Balance": f"₹{int(acc.get('Balance', 0)):,}",
             "Amount Overdue": f"₹{int(acc.get('PastDueAmount', 0)):,}"
         })
+        
     return {
         "Customer Name": personal_info.get('Name', {}).get('FullName', 'N/A'),
         "CIBIL Score": data['reportData'].get('credit_score', 'N/A'),
@@ -74,7 +89,6 @@ def analyze_cibil_report(data, reference_date):
         "Settled/Write-off count": len(written_off_accounts),
         "All Accounts Details": all_accounts_details
     }
-
 
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="CIBIL Report Analyzer", layout="wide")
@@ -151,7 +165,6 @@ if st.session_state.analysis_done:
         tab1, tab2 = st.tabs(["📊 Credit Summary", "🗂️ Complete Account History"])
 
         with tab1:
-            # --- FIX: Restored the complete display logic for the summary tab ---
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.markdown(f'<div class="metric-card"><div class="metric-label">CIBIL Score</div><div class="metric-value">{summary["CIBIL Score"]}</div></div>', unsafe_allow_html=True)
