@@ -1,2 +1,6 @@
 streamlit
-pandas 
+pandas
+numpy
+xlsxwriter
+matplotlib
+reportlab
